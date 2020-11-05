@@ -1,0 +1,10 @@
+Q1: Hello, how are you?
+Q2: What's my name?
+Q3: How many people play in a Hockey team?
+Q4: How many people live in Atlantis?
+Q5: What are the big ten?
+Q6: What is single malt scotch?
+Q7: Who is Isaac Newton?
+Q8: What is the best Dim Sum?
+Q9: What is mustard made of?
+Q10: What is 奶茶？
