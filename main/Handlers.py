@@ -49,7 +49,7 @@ class objectFormatter:
                 try:
                     index = vocabulary.index(term)
                 except ValueError:
-                    print("\033[1;31;40mValueError: \'" + term + "\'\033[0m not in vocabulary. Term will be skipped.")
+                    print("\033[1;31;40mValueError: \'" + term + "\'\033[0m not in vocabulary. Term will be ignored.")
                     continue
                 bow[key][index] += 1
         return bow
@@ -60,7 +60,7 @@ class objectFormatter:
             try:
                 index = vocabulary.index(term)
             except ValueError:
-                print("\033[1;31;40mValueError: \'" + term + "\'\033[0m not in vocabulary. Term will be skipped.")
+                print("\033[1;31;40mValueError: \'" + term + "\'\033[0m not in vocabulary. Term will be ignored.")
                 continue
             a[index] += 1
         return a
@@ -89,10 +89,10 @@ class objectFormatter:
                 category = "Question"
 
             self.CATEGORY = category
-            self.OBJ_PATH = f'../objects/{category}'
+            self.OBJ_PATH = f'../objects/questions/{category}'
 
             self.objFormatter = objFormatter
-            self.dataset = pd.read_csv('../data/dataset.csv')
+            self.dataset = pd.read_csv('../data/questions/dataset.csv')
             self.qID = self.dataset['questionID']
 
             self.matrix = self.__load_matrix()

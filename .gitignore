@@ -2,4 +2,8 @@
 
 __*
 
-/objects
+*.joblib
+
+*.qna
+
+test.py

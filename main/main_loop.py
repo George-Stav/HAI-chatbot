@@ -3,7 +3,7 @@ from question import answer
 
 prompt = lambda x: input(f'{x}> ')
 
-USERNAME = prompt('What should I call you?\n')
+# USERNAME = prompt('What should I call you?\n')
 # BOTNAME = prompt('What is my name?')
 
 userInput = ''
@@ -17,6 +17,6 @@ while True:
     elif userInput == 'q':
         break
 
-    print(answer(userInput))
+    answer(userInput, True)
 
 print("Bye I guess.")
