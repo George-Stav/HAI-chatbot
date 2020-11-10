@@ -4,6 +4,4 @@ __*
 
 *.joblib
 
-*.qna
-
 test.py
