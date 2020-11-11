@@ -19,16 +19,10 @@ from nltk.stem.snowball import SnowballStemmer
 ### GLOBAL VARIABLES ###
 ########################
 
-QNA_CATEGORY = 'question'
-DATA_DIR = './data'
-OBJ_PATH = './objects'
-QNA_OBJ_PATH = f'{OBJ_PATH}/questions/{QNA_CATEGORY}'
-SMALL_TALK_OBJ_PATH = f'{OBJ_PATH}/small_talk'
 USERNAME = None
 BOTNAME = None
 DEBUG = True
 
-qna_dataset = pd.read_csv(f'{DATA_DIR}/qna/dataset.csv')
 
 #################
 ### MAIN LOOP ###
@@ -51,8 +45,9 @@ def start():
         elif userInput == 'q':
             break
 
-        answer(userInput, v, b)
-        # intent([userInput])
+        chosen_intent = intent([userInput])
+        answer(userInput, master[chosen_intent]['vocabulary'], master[chosen_intent]['bag'], master[chosen_intent]['answers'])
+        
 
     print("Bye I guess.")
 
@@ -71,14 +66,12 @@ def cos_sim(q, d):
 def jaccard_sim(q, d):
     return jaccard_score(q, d, average='macro')
 
-def answer(query, vocabulary, bag):
+def answer(query, vocabulary, bag, answers):
     # answers = qna_dataset['answer']
-    _, answers = make_small_talk_dict("caring")
-
     f_query = format([query])
     q_query = process_query(f_query, vocabulary)
 
-    similarity_index = [cos_sim(q_query.tolist(), d.tolist()) for d in bag.values()] # create list of similarity indeces between query and bag-of-words
+    similarity_index = [cos_sim(q_query.tolist(), doc.tolist()) for doc in bag] # create list of similarity indeces between query and bag-of-words
 
     max_sim = max(similarity_index)
 
@@ -143,8 +136,8 @@ def format(data):
         if re.search('\'', doc):
             doc = contractions.fix(doc) # remove cases with apostrophe (e.g. "I'm", "it's" etc.)
         t = tokenizer.tokenize(doc) # tokenize, remove punctuation
-        # a.append([stemmer.stem(x) for x in t])
-        a.append([x.lemma_.lower() for x in nlp(" ".join(t))])# if x.is_stop == False]) # lemmatize, remove stopwords and flatten uppercase
+        a.append([stemmer.stem(x) for x in t])
+        # a.append([x.lemma_.lower() for x in nlp(" ".join(t))])# if x.is_stop == False]) # lemmatize, remove stopwords and flatten uppercase
     return a[0] if len(data) == 1 else a
 
     
@@ -174,13 +167,19 @@ def bow(keys, data, vocabulary):
             bow[key][index] += 1
     return bow
 
-
-def apply_tfidf(data, vocabulary, variation="ds"):
-    if variation == "dl":
-        
-    else:
-        print()
-
+def bow_list(data, vocabulary):
+    bow = []
+    for i, doc in enumerate(data):
+        bow.append(np.zeros(len(vocabulary)))
+        for term in doc:
+            try:
+                index = vocabulary.index(term)
+            except ValueError:
+                if DEBUG:
+                    print("\033[1;31;40mValueError: \'" + term + "\'\033[0m not in vocabulary. Term will be ignored.")
+                continue
+            bow[i][index] += 1
+    return bow
 
 def process_query(data, vocabulary):
     a = np.zeros(len(vocabulary))
@@ -194,51 +193,95 @@ def process_query(data, vocabulary):
         a[index] += 1
     return a
 
-def load_qna_parsed():
+
+
+
+from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
+from sklearn.pipeline import Pipeline
+
+def apply_tfidf(data, vocabulary, variation="ds"):
+    # pipe = Pipeline([('raw_term_frequency', CountVectorizer(vocabulary=vocabulary)), ('tfidf', TfidfTransformer())]).fit(data)
+    countVect = CountVectorizer(vocabulary=vocabulary)
+
+    return countVect.fit_transform(data)
+
+
+def load_datasets():
+
+    ###### QNA Dataset ######
+
+    qna_dataset = pd.read_csv('./data/qna/dataset.csv')
+    qna_category = "question"
+    qna_path = f'./objects/qna/{qna_category}'
+
     try:
-        p = load(f'{QNA_OBJ_PATH}.parsed.joblib')
+        qna_parsed = load(f'{qna_path}.parsed.joblib')
     except:
-        print(f"Parsing qna[{QNA_CATEGORY}] dataset...")
-        p = format(qna_dataset[f'{QNA_CATEGORY}'])
-        dump(p, f'{QNA_OBJ_PATH}.parsed.joblib')
-    return p
+        print(f"Parsing qna[{qna_category}] dataset...")
+        qna_parsed = format(qna_dataset[qna_category])
+        dump(qna_parsed, f'{qna_path}.parsed.joblib')
 
-
-def load_qna_vocab():
     try:
-        v = load(f'{QNA_OBJ_PATH}.vocab.joblib')
+        qna_vocabulary = load(f'{qna_path}.vocab.joblib')
     except:
         print("Creating vocabulary...")
-        v = vocab(parsed_data)
-        dump(v, f'{QNA_OBJ_PATH}.vocab.joblib')
-    return v
+        qna_vocabulary = vocab(qna_parsed)
+        dump(qna_vocabulary, f'{qna_path}.vocab.joblib')
 
-
-def load_qna_bow():
-    qID = qna_dataset['questionID']
     try:
-        b = load(f'{QNA_OBJ_PATH}.bow.joblib')
+        qna_bag = load(f'{qna_path}.bow.joblib')
     except:
         print("Creating bag of words...")
-        b = bow(qID, parsed_data, vocabulary)
-        dump(b, f'{QNA_OBJ_PATH}.bow.joblib')
-    return b
-
-parsed_data = load_qna_parsed()
-vocabulary = load_qna_vocab()
-bag = load_qna_bow()
-
-# start()
+        qna_bag = bow_list(qna_parsed, qna_vocabulary)
+        dump(qna_bag, f'{qna_path}.bow.joblib')
 
 
+    ###### Small Talk Dataset ######
+
+    personality = "witty" # choose from ['witty', 'caring', 'enthusiastic', 'friendly', 'professional']
+    variation = "ds" # choose from ['ds', 'dl'] referring to what is considered a document (ds -> section, dl -> line/question)
+    extra = "" # any extra specifications; i.e. sw = stop words are not removed, stem = dataset is stemmed instead of lemmatised, sw_stem = combination of previous two
+    questions, answers = read_small_talk_dataset(personality, variation)
+    smltk_path = f'./objects/small_talk/{personality}_{variation}_{extra}'
+
+    try:
+        smltk_parsed = load(f'{smltk_path}.parsed.joblib')
+    except:
+        print(f"Parsing {personality}_{variation}_{extra} small talk dataset...")
+        smltk_parsed = format(questions)
+        dump(smltk_parsed, f'{smltk_path}.parsed.joblib')
+
+    try:
+        smltk_vocabulary = load(f'{smltk_path}.vocab.joblib')
+    except:
+        print("Creating vocabulary...")
+        smltk_vocabulary = vocab(smltk_parsed)
+        dump(smltk_vocabulary, f'{smltk_path}.vocab.joblib')
+
+    try:
+        smltk_bag = load(f'{smltk_path}.bow.joblib')
+    except:
+        print("Creating bag of words...")
+        smltk_bag = bow_list(smltk_parsed, smltk_vocabulary)
+        dump(smltk_bag, f'{smltk_path}.bow.joblib')
+
+    return {
+        "qna":{
+            "parsed": qna_parsed,
+            "vocabulary": qna_vocabulary,
+            "bag": qna_bag,
+            "answers": qna_dataset['answer']
+        },
+        "smltk":{
+            "parsed": smltk_parsed,
+            "vocabulary": smltk_vocabulary,
+            "bag": smltk_bag,
+            "answers": answers
+        },
+    }
 
 
 
-
-
-def csv(data):
-    df = pd.DataFrame(data)
-    df.to_csv('./test.csv', index=False, encoding='UTF-8')
 
 
 
@@ -248,12 +291,11 @@ def csv(data):
 import math
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
-from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 from nltk.corpus import stopwords
 
 
-def make_small_talk_dict(personality, variation="ds"):
+def read_small_talk_dataset(personality, variation="ds"):
     filename = f'./data/small_talk/chitchat_{personality}.qna'
 
     try:
@@ -294,31 +336,10 @@ def make_small_talk_dict(personality, variation="ds"):
 
 
 
-def load_small_talk_dataset_ds(personality, variation="ds"):
-    questions_dict, answers = make_small_talk_dict(personality, "ds")
 
-    try:
-        p = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.parsed.joblib')
-    except:
-        print(f"Parsing {personality} small talk dataset...")
-        p = format(questions_dict.values())
-        dump(p, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.parsed.joblib')
 
-    try:
-        v = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.vocab.joblib')
-    except:
-        print("Creating vocabulary...")
-        v = vocab(p)
-        dump(v, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.vocab.joblib')
 
-    try:
-        b = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.bow.joblib')
-    except:
-        print("Creating bag of words...")
-        b = bow(answers, p, v)
-        dump(b, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.bow.joblib')
 
-    return p, v, b
 
 
 
@@ -326,55 +347,21 @@ def load_small_talk_dataset_ds(personality, variation="ds"):
 
 
 
-def load_small_talk_dataset_dl(personality, variation="dl"):
-    """Same as above but each line is considered a document instead of a group of questions (lines).
 
-    Args:
-         personality ([type]): [description]
-    """
-    questions_dict, answers = make_small_talk_dict(personality, "dl")
 
-    try:
-        p = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.parsed.joblib')
-    except:
-        print(f"Parsing {personality} small talk dataset...")
-        p = [format(x) for x in questions_dict.values()]
-        dump(p, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.parsed.joblib')
 
-    try:
-        v = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.vocab.joblib')
-    except:
-        print("Creating vocabulary...")
-        p2 = [x for y in p for x in y]
-        v = vocab(p2)
-        dump(v, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.vocab.joblib')
 
-    try:
-        b = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.bow.joblib')
-    except:
-        print("Creating bag of words...")
-        b = []
-        for i, x in enumerate(p):
-            b.append(bow(answers, x, v))
-        dump(b, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.bow.joblib')
 
-    return p, v, b
 
-# p, v, b = load_small_talk_dataset_dl("witty")
 
-# test, _ = make_small_talk_dict("witty")
 
-rawData, ans = make_small_talk_dict("witty", variation="dl")
 
-# p, v, b = load_small_talk_dataset_ds("caring", "spacy_sw_ds")
 
-# start()
 
 
 
 
 
-sys.exit()
 
 
 
@@ -385,46 +372,18 @@ sys.exit()
 
 
 
+smltk_dataset, answers = read_small_talk_dataset("witty", "dl")
+qna_csv = pd.read_csv('./data/qna/dataset.csv')
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-questions, answers = make_small_talk_dict("witty")
-
-
-small_talk_dataset = [item for sublist in questions.values() for item in sublist] #[:math.floor(len(sublist)/2)]
-questions_dataset = [item for x in qna_dataset if x != 'questionID' for item in qna_dataset[x]] # and x != 'question'
+qna_dataset = [item for x in qna_csv if x != 'questionID' for item in qna_csv[x]] # and x != 'question'
 
 # print("Small talk: {}".format(len(small_talk_dataset)))
 # print("QnA: {}".format(len(qna_dataset['question'])))
 
-labels = ["small_talk" for _ in range(len(small_talk_dataset))]
-labels += ["qna" for _ in range(len(questions_dataset))]
+labels = ["smltk" for _ in range(len(smltk_dataset))]
+labels += ["qna" for _ in range(len(qna_dataset))]
 
-combined_dataset = small_talk_dataset + questions_dataset
+combined_dataset = smltk_dataset + qna_dataset
 
 # dict = {
 #     'labels': labels,
@@ -464,7 +423,9 @@ predicted = classifier.predict(x_test_tf)
 def intent(data):
     data_counts = countVect.transform(data)
     data_tfidf = tfidf_transformer.transform(data_counts)
-    print(classifier.predict(data_tfidf))
+    intent = classifier.predict(data_tfidf)[0]
+    print(intent)
+    return intent
 
 
 from spacy import displacy
@@ -476,8 +437,9 @@ name_intent_keywords = [
 ]
 
 
-
-
+master = load_datasets()
+start()
+# print(master['qna']['bag'])
 
 
 
