@@ -12,6 +12,7 @@ import wikipedia
 from sklearn.metrics import jaccard_score
 import re, contractions
 from itertools import zip_longest
+from nltk.stem.snowball import SnowballStemmer
 
 
 ########################
@@ -72,12 +73,12 @@ def jaccard_sim(q, d):
 
 def answer(query, vocabulary, bag):
     # answers = qna_dataset['answer']
-    _, answers = make_small_talk_dict("witty")
+    _, answers = make_small_talk_dict("caring")
 
     f_query = format([query])
     q_query = process_query(f_query, vocabulary)
 
-    similarity_index = [cos_sim(q_query.tolist(), bag[d].tolist()) for d in bag] # create list of similarity indeces between query and bag-of-words
+    similarity_index = [cos_sim(q_query.tolist(), d.tolist()) for d in bag.values()] # create list of similarity indeces between query and bag-of-words
 
     max_sim = max(similarity_index)
 
@@ -87,10 +88,13 @@ def answer(query, vocabulary, bag):
 
     indeces = [i for i, x in enumerate(similarity_index) if x == max_sim] # find all indeces of answers with maximum similarity
     random = rand.choice(indeces)
-    print(answers[random]) # choose a random one out of the most fitting answers
+    # print(answers[random]) # choose a random one out of the most fitting answers
 
     if DEBUG:
-        print('[' + str(round(max_sim, 3) * 100) + '%]')
+        max_list = sorted(similarity_index, reverse=True)[:3]
+        for m in max_list:
+            index = similarity_index.index(m)
+            print('[' + str(round(m, 3) * 100) + '] ==> ' + answers[index])
         print(f_query)
         # print(format([qna_dataset[QNA_CATEGORY][random]]))
 
@@ -133,12 +137,14 @@ def format(data):
     '''
     tokenizer = nltk.RegexpTokenizer(r'\w+') # use tokenizer that removes punctuation
     nlp = spacy.load('en_core_web_sm') # spaCy english model    
+    stemmer = SnowballStemmer("english")
     a = []
     for doc in data:
         if re.search('\'', doc):
             doc = contractions.fix(doc) # remove cases with apostrophe (e.g. "I'm", "it's" etc.)
         t = tokenizer.tokenize(doc) # tokenize, remove punctuation
-        a.append([x.lemma_.lower() for x in nlp(" ".join(t)) if x.is_stop == False]) # lemmatize, remove stopwords and flatten uppercase
+        # a.append([stemmer.stem(x) for x in t])
+        a.append([x.lemma_.lower() for x in nlp(" ".join(t))])# if x.is_stop == False]) # lemmatize, remove stopwords and flatten uppercase
     return a[0] if len(data) == 1 else a
 
     
@@ -156,7 +162,7 @@ def vocab(data):
 
 def bow(keys, data, vocabulary):
     bow = {}
-    for (key, document) in zip_longest(keys, data, fillvalue=keys[0]):
+    for (key, document) in zip(keys, data):
         bow[key] = np.zeros(len(vocabulary))
         for term in document:
             try:
@@ -167,6 +173,13 @@ def bow(keys, data, vocabulary):
                 continue
             bow[key][index] += 1
     return bow
+
+
+def apply_tfidf(data, vocabulary, variation="ds"):
+    if variation == "dl":
+        
+    else:
+        print()
 
 
 def process_query(data, vocabulary):
@@ -240,7 +253,7 @@ from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 from nltk.corpus import stopwords
 
 
-def make_small_talk_dict(personality):
+def make_small_talk_dict(personality, variation="ds"):
     filename = f'./data/small_talk/chitchat_{personality}.qna'
 
     try:
@@ -265,84 +278,133 @@ def make_small_talk_dict(personality):
     
     f.close()
 
-    answers = [x for x in answers if x]
-    questions = {x:questions[i] for i, x in enumerate(answers)}
-    # questions = {x:" ".join(questions[i]) for i, x in enumerate(answers)}
+    answers = [x for x in answers if x] # remove empty entries
+
+    if variation == "dl":
+        answers = [a for a, q in zip(answers, questions.values()) for _ in range(len(q))] # each answer appears as many times as the documents (lines) it corresponds to
+        questions = [question for section in questions.values() for question in section]
+        # questions = {x:questions[i] for i, x in enumerate(answers)} #dl -> document = line
+    else: #ds
+        questions = [" ".join(questions[i]) for i in range(len(answers))]
+        # questions = {x:" ".join(questions[i]) for i, x in enumerate(answers)} #ds -> document = section
 
     return questions, answers
 
-def load_small_talk_dataset(personality):
-    questions_dict, answers = make_small_talk_dict(personality)
+
+
+
+
+def load_small_talk_dataset_ds(personality, variation="ds"):
+    questions_dict, answers = make_small_talk_dict(personality, "ds")
 
     try:
-        p = load(f'{SMALL_TALK_OBJ_PATH}/{personality}.parsed.joblib')
+        p = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.parsed.joblib')
     except:
         print(f"Parsing {personality} small talk dataset...")
         p = format(questions_dict.values())
-        dump(p, f'{SMALL_TALK_OBJ_PATH}/{personality}.parsed.joblib')
+        dump(p, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.parsed.joblib')
 
     try:
-        v = load(f'{SMALL_TALK_OBJ_PATH}/{personality}.vocab.joblib')
+        v = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.vocab.joblib')
     except:
         print("Creating vocabulary...")
         v = vocab(p)
-        dump(v, f'{SMALL_TALK_OBJ_PATH}/{personality}.vocab.joblib')
+        dump(v, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.vocab.joblib')
 
     try:
-        b = load(f'{SMALL_TALK_OBJ_PATH}/{personality}.bow.joblib')
+        b = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.bow.joblib')
     except:
         print("Creating bag of words...")
         b = bow(answers, p, v)
-        dump(b, f'{SMALL_TALK_OBJ_PATH}/{personality}.bow.joblib')
+        dump(b, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.bow.joblib')
 
     return p, v, b
 
-def load_small_talk_dataset_dl(personality):
+
+
+
+
+
+
+def load_small_talk_dataset_dl(personality, variation="dl"):
     """Same as above but each line is considered a document instead of a group of questions (lines).
 
     Args:
          personality ([type]): [description]
     """
-    questions_dict, answers = make_small_talk_dict(personality)
+    questions_dict, answers = make_small_talk_dict(personality, "dl")
 
     try:
-        p = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_dl.parsed.joblib')
+        p = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.parsed.joblib')
     except:
         print(f"Parsing {personality} small talk dataset...")
         p = [format(x) for x in questions_dict.values()]
-        dump(p, f'{SMALL_TALK_OBJ_PATH}/{personality}_dl.parsed.joblib')
+        dump(p, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.parsed.joblib')
 
     try:
-        v = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_dl.vocab.joblib')
+        v = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.vocab.joblib')
     except:
         print("Creating vocabulary...")
         p2 = [x for y in p for x in y]
         v = vocab(p2)
-        dump(v, f'{SMALL_TALK_OBJ_PATH}/{personality}_dl.vocab.joblib')
+        dump(v, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.vocab.joblib')
 
     try:
-        b = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_dl.bow.joblib')
+        b = load(f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.bow.joblib')
     except:
         print("Creating bag of words...")
         b = []
         for i, x in enumerate(p):
-            b.append(bow([answers[i]], x, v))
-        # dump(b, f'{SMALL_TALK_OBJ_PATH}/{personality}_dl.bow.joblib')
+            b.append(bow(answers, x, v))
+        dump(b, f'{SMALL_TALK_OBJ_PATH}/{personality}_{variation}.bow.joblib')
 
     return p, v, b
 
-p, v, b = load_small_talk_dataset_dl("witty")
-
-print(len(b[0]["Nah, I'm good."]))
-print(len(v))
-print(len(b))
-print(p[0])
+# p, v, b = load_small_talk_dataset_dl("witty")
 
 # test, _ = make_small_talk_dict("witty")
 
+rawData, ans = make_small_talk_dict("witty", variation="dl")
 
+# p, v, b = load_small_talk_dataset_ds("caring", "spacy_sw_ds")
 
 # start()
+
+
+
+
+
+sys.exit()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -413,20 +475,6 @@ name_intent_keywords = [
     "my"
 ]
 
-def test_format(data):
-    tokenizer = nltk.RegexpTokenizer(r'\w+') # use tokenizer that removes punctuation
-    nlp = spacy.load('en_core_web_sm') # spaCy english model    
-
-    x = " be".join(re.split('\'s', data)) # replace all apostrophes with 'be', the base verb of "is", "are" etc.
-    t = tokenizer.tokenize(x) # tokenize, remove punctuation
-    doc = nlp(" ".join(t))
-    displacy.render(doc)
-
-
-
-# test = "What is my name?"
-
-# test_format(test)
 
 
 
@@ -451,22 +499,3 @@ def test_format(data):
 
 
 
-
-
-
-
-
-
-# df1 = pd.DataFrame(load_qna_parsed())
-# df2 = pd.DataFrame(load_qna_vocab())
-# df3 = pd.DataFrame(load_qna_bow())
-
-# df1.to_csv('./data/parsed.csv', index=False, encoding='UTF-8')
-# df2.to_csv('./data/vocab.csv', index=False, encoding='UTF-8')
-# df3.to_csv('./data/bow.csv', index=False, encoding='UTF-8')
-
-# x = [max(bag[d]) for d in bag]
-
-# for i in range(len(x)):
-#     if i in x:
-#         print("{}: {}".format(i, x.count(i)))
