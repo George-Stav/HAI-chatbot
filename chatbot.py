@@ -22,6 +22,7 @@ from nltk.stem.snowball import SnowballStemmer
 USERNAME = None
 BOTNAME = None
 DEBUG = True
+PERSONALITY = 'witty'
 
 #################
 ### MAIN LOOP ###
@@ -48,12 +49,13 @@ def start():
             continue
 
         intent = get_intent([userInput])
-        answer_tfidf(
-            userInput,
-            master[intent]['vocabulary'],
-            master[intent]['tfidf'],
-            master[intent]['answers']
-        )
+        answer(userInput, intent, verbose=True, tfidf=True)
+        # answer_tfidf(
+        #     userInput,
+        #     master[intent]['vocabulary'],
+        #     master[intent]['tfidf'],
+        #     master[intent]['answers']
+        # )
 
     print("Bye I guess.")
 
@@ -72,49 +74,33 @@ def cos_sim(q, d):
 def jaccard_sim(q, d):
     return jaccard_score(q, d, average='macro')
 
-def answer(query, vocabulary, bag, answers):
 
-    f_query = format([query], keep_stop=True)
-    q_query = process_query(f_query, vocabulary)
+def answer(query, intent, silent=False, verbose=False, tfidf=True):
 
-    similarity_index = [cos_sim(q_query.tolist(), doc.tolist()) for doc in bag] # create list of similarity indeces between query and bag-of-words
+    if not tfidf:
+        query = process_query(format([query]), master[intent]['vocabulary'])
+        similarity_index = [cos_sim(query.tolist(), doc.tolist()) for doc in master[intent]['bag']]
+    else:
+        query = apply_tfidf([query], master[intent]['vocabulary']).toarray()
+        similarity_index = [cos_sim(query.tolist(), doc.tolist()) for doc in master[intent]['tfidf'].toarray()]
+    
+    top_results = sorted(similarity_index, reverse=True)[:3]
+    top_results = {i:x for i, x in enumerate(similarity_index) if x in top_results and x != 0}
 
-    max_sim = max(similarity_index)
-
-    if max_sim == 0:
-        bot_response(query)
-        return
-
-    indeces = [i for i, x in enumerate(similarity_index) if x == max_sim] # find all indeces of answers with maximum similarity
-    random = rand.choice(indeces)
-    print("Random answer: " + answers[random]) # choose a random one out of the most fitting answers
-
-    if DEBUG:
-        max_list = sorted(similarity_index, reverse=True)[:3]
-        for m in max_list:
-            index = similarity_index.index(m)
-            print('[' + str(round(m, 3) * 100) + '] ==> ' + answers[index])
-        print(f_query)
-        # print(format([qna_dataset[QNA_CATEGORY][random]]))
-
-
-
-
-
-def answer_tfidf(query, vocabulary, data, answers):
-    query = apply_tfidf([query], vocabulary).toarray()
-
-    similarity_index = [cos_sim(query.tolist(), doc.tolist()) for doc in data.toarray()] # create list of similarity indeces between query and bag-of-words
-
-    if DEBUG:
-        max_list = sorted(similarity_index, reverse=True)[:3]
-        for m in max_list:
+    if silent:
+        return top_results
+    
+    if verbose:
+        for i, x in zip(top_results.keys(), top_results.values()):
             try:
-                m = m[0]
+                x = x[0]
             except:
                 NotImplemented
-            index = similarity_index.index(m)
-            print('[' + str(round(m, 3) * 100) + '] ==> ' + answers[index])
+            print('[' + str(round(x, 3) * 100) + '] ==> ' + master[intent]['answers'][i])
+    else: # choose a random answer out of the top results
+        # indeces = [i for i, x in enumerate(similarity_index) if x == max(top_results)]
+        print(master[intent]['answers'][rand.choice(top_results.keys())])
+
 
 def bot_response(query):
     ### snarky response ###
@@ -243,10 +229,27 @@ def load_datasets():
 
     ###### QNA Dataset ######
 
+    # special categories:
+    ### all => 3 meaningful columns stacked on top of each other
+    ### combined => concatenation of 2 or more meaningful categories
+    ###             number of documents stays the same but length of each document increases
+    ###             QD => question + document
+
     qna_dataset = pd.read_csv('./data/qna/dataset.csv')
     qna_category = "question"
     extra = "" # any extra specifications; i.e. sw = stop words are not removed, stem = dataset is stemmed instead of lemmatised, sw_stem = combination of previous two
     qna_path = f'./objects/qna/{qna_category}_{extra}'
+    all_categories = qna_dataset['question'].tolist() + qna_dataset['answer'].tolist() + qna_dataset['document'].tolist()
+    all_categories_answers = qna_dataset['answer'].tolist() + qna_dataset['answer'].tolist() + qna_dataset['answer'].tolist()
+    combined_categories = [x+y for x,y in zip(qna_dataset['question'], qna_dataset['answer'])]
+
+    if qna_category == 'all':
+        qna_unparsed = all_categories
+    elif re.search('combined', qna_category):
+        qna_unparsed = combined_categories
+    else:
+        qna_unparsed = qna_dataset[qna_category]
+
 
     if re.search('sw', extra):
         sw = True
@@ -257,7 +260,7 @@ def load_datasets():
         qna_parsed = load(f'{qna_path}.parsed.joblib')
     except:
         print(f"Parsing qna[{qna_category}] dataset...")
-        qna_parsed = format(qna_dataset[qna_category], stem=stem, keep_stop=sw)
+        qna_parsed = format(qna_unparsed, stem=stem, keep_stop=sw)
         dump(qna_parsed, f'{qna_path}.parsed.joblib')
 
     try:
@@ -278,13 +281,13 @@ def load_datasets():
         qna_tfidf = load(f'{qna_path}.tfidf.joblib')
     except:
         print("Creating tfidf matrix...")
-        qna_tfidf = apply_tfidf(qna_dataset[qna_category], qna_vocabulary)
+        qna_tfidf = apply_tfidf(qna_unparsed, qna_vocabulary)
         dump(qna_tfidf, f'{qna_path}.tfidf.joblib')
 
 
     ###### Small Talk Dataset ######
 
-    personality = "witty" # choose from ['witty', 'caring', 'enthusiastic', 'friendly', 'professional']
+    personality = PERSONALITY # choose from ['witty', 'caring', 'enthusiastic', 'friendly', 'professional']
     variation = "ds" # choose from ['ds', 'dl'] referring to what is considered a document (ds -> section, dl -> line/question)
     extra = "" # same as above
     questions, answers = read_small_talk_dataset(personality, variation)
@@ -325,12 +328,12 @@ def load_datasets():
 
     return {
         "qna":{
-            "unparsed": qna_dataset[qna_category],
+            "unparsed": qna_unparsed,
             "parsed": qna_parsed,
             "vocabulary": qna_vocabulary,
             "bag": qna_bag,
             "tfidf": qna_tfidf,
-            "answers": qna_dataset['answer'],
+            "answers": qna_dataset['answer'] if qna_category != 'all' else all_categories_answers,
             "sw": sw,
             "stem": stem
         },
@@ -367,8 +370,8 @@ def read_small_talk_dataset(personality, variation="ds"):
     try:
         f = open(filename, 'r')
     except FileNotFoundError:
-        print(f'{filename} not found.')
-        return   
+        print(f'{filename} not found. Defaulting to witty personality.')
+        filename = './data/small_talk/chitchat_witty.qna'
     
     questions = {x:[] for x in range(100)}
     answers = []
@@ -417,7 +420,7 @@ def init_classifier(SEED=rand.randint(1,100000), print_evaluation=False):
     qna_dataset = [item for x in qna_csv if x != 'questionID' for item in qna_csv[x]] # and x != 'question'
     # smltk_dataset = [item for section in read_small_talk_dataset('witty', 'special')[0] for i, item in enumerate(section) if i <= len(section)/2]
     # full_smltk_dataset, _ = read_small_talk_dataset(rand.choice(personalities), 'dl')
-    smltk_dataset, _ = read_small_talk_dataset('witty', 'dl')
+    smltk_dataset, _ = read_small_talk_dataset(PERSONALITY, 'dl')
 
     # full_smltk_dataset = [x for p in personalities for x in read_small_talk_dataset(p, 'dl')[0]]  
     # smltk_dataset = []
@@ -457,11 +460,12 @@ def init_classifier(SEED=rand.randint(1,100000), print_evaluation=False):
 
     return classifier
 
-def get_intent(data):
+def get_intent(data, silent=False):
     data_counts = countVect.transform(data)
     data_tfidf = tfidf_transformer.transform(data_counts)
     intent = classifier.predict(data_tfidf)[0]
-    print(intent)
+    if not silent:
+        print(intent)
     return intent
 
 
@@ -472,14 +476,35 @@ def run_test_queries():
         print("\n~~~~~ " + line[:-1] + " ~~~~~\n")
         query = line[line.find(':')+2:-1]
         intent = get_intent([query])
-        answer_tfidf(
-            query,
-            master[intent]['vocabulary'],
-            master[intent]['tfidf'],
-            master[intent]['answers']
-        )
+        answer(query, intent, verbose=True, tfidf=True)
 
     f.close()
+
+def test_qna():
+    qna_dataset = pd.read_csv('./data/qna/dataset.csv')
+    questions = qna_dataset['question']
+    answers = qna_dataset['answer']
+
+    misclassified = {}
+    correct = {}
+    for i, q in enumerate(questions):
+        if i >= 100:
+            break
+        intent = get_intent([q], silent=True)
+        if intent == 'smltk':
+            misclassified['Q' + str(i+1)] = q
+            continue
+        
+        results = answer(q, intent, silent=True)
+
+        correct[q] = ['Q'+str(i+1) for i in results if results[i] == 100]
+
+
+    misclassified = pd.DataFrame.from_dict(data={'qID':misclassified.keys().tolist(), 'questions':misclassified.values().tolist()})
+    results = pd.DataFrame.from_dict(correct, orient='columns')
+
+    misclassified.to_csv("./misclassified.csv", index=False, encoding='UTF-8')
+    results.to_csv("./results.csv", index=False, encoding='UTF-8')
 
 # questions, answers = read_small_talk_dataset("witty", variation="ds")
 
@@ -487,6 +512,8 @@ countVect = CountVectorizer(stop_words=stopwords.words('english'))
 tfidf_transformer = TfidfTransformer(use_idf=True, sublinear_tf=True)
 classifier = init_classifier(SEED=78054, print_evaluation=True)
 master = load_datasets()
+
+test_qna()
 
 
 start()
