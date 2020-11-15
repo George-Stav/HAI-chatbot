@@ -31,9 +31,9 @@ PERSONALITY = 'witty'
 def start():
     prompt = lambda x: input(f'{x}> ')
 
-    # USERNAME = prompt('What should I call you?\n')
+    USERNAME = prompt('What should I call you?\n').capitalize()
     # BOTNAME = prompt('What is my name?')
-    
+
     userInput = ''
     print('\nEnter \'q\' to quit any time.')
 
@@ -48,14 +48,19 @@ def start():
             run_test_queries()
             continue
 
+        name = name_intent(userInput)
+
+        if name:
+            if name == "recall":
+                print("You told me your name is " + USERNAME + ". Anything else?")
+                continue
+            else:
+                print("Noted " + name + ".")
+                USERNAME = name
+                continue
+
         intent = get_intent([userInput])
         answer(userInput, intent, verbose=True, tfidf=True)
-        # answer_tfidf(
-        #     userInput,
-        #     master[intent]['vocabulary'],
-        #     master[intent]['tfidf'],
-        #     master[intent]['answers']
-        # )
 
     print("Bye I guess.")
 
@@ -133,7 +138,7 @@ def bot_response(query):
 ###############
 
 
-def format(data, keep_stop=False, stem=False):    
+def format(data, keep_stop=False, stem=False, detect_name=False):
     '''
     Remove punctuation & stopwords, tokenize, flatten uppercase, lemmatize given documents
     data: Array of documents
@@ -143,16 +148,27 @@ def format(data, keep_stop=False, stem=False):
     nlp = spacy.load('en_core_web_sm') # spaCy english model    
     stemmer = SnowballStemmer("english")
     a = []
+
     for doc in data:
         if re.search('\'', doc):
             doc = contractions.fix(doc) # remove cases with apostrophe (e.g. "I'm", "it's" etc.)
         t = tokenizer.tokenize(doc) # tokenize, remove punctuation
+
+        if detect_name:
+            f_doc = nlp(" ".join(t))
+            names = [x.text for x in f_doc.ents]
+            if names:
+                if DEBUG: # print all names it found
+                    print("DEBUG message")
+                    print(names)
+                return names # [0]
+            return [x.lemma_.lower() for x in f_doc if not x.is_stop] # return original data without stop words if no entities found
+            
         if stem:
             a.append([stemmer.stem(x) for x in t if x not in stopwords.words('english') or keep_stop])
         else:
-            a.append([x.lemma_.lower() for x in nlp(" ".join(t)) if not x.is_stop or keep_stop])# if not x.is_stop or (x.is_stop and keep_stop)]) # lemmatize, remove stopwords and flatten uppercase
+            a.append([x.lemma_.lower() for x in nlp(" ".join(t)) if not x.is_stop or keep_stop])# lemmatize, remove stopwords and flatten uppercase
     return a[0] if len(data) == 1 else a
-
     
 def vocab(data):
     '''
@@ -481,43 +497,93 @@ def run_test_queries():
     f.close()
 
 def test_qna():
+    """Test the qna 
+    """
     qna_dataset = pd.read_csv('./data/qna/dataset.csv')
     questions = qna_dataset['question']
     answers = qna_dataset['answer']
 
     misclassified = {}
     correct = {}
-    for i, q in enumerate(questions):
-        if i >= 100:
-            break
+    for i, q in zip(enumerate(questions), range(100)):
         intent = get_intent([q], silent=True)
         if intent == 'smltk':
             misclassified['Q' + str(i+1)] = q
             continue
         
         results = answer(q, intent, silent=True)
-
         correct[q] = ['Q'+str(i+1) for i in results if results[i] == 100]
 
-
-    misclassified = pd.DataFrame.from_dict(data={'qID':misclassified.keys().tolist(), 'questions':misclassified.values().tolist()})
-    results = pd.DataFrame.from_dict(correct, orient='columns')
-
-    misclassified.to_csv("./misclassified.csv", index=False, encoding='UTF-8')
-    results.to_csv("./results.csv", index=False, encoding='UTF-8')
-
+    print(misclassified)
 # questions, answers = read_small_talk_dataset("witty", variation="ds")
+
+def name_intent(query):
+    recall_vocabulary = [
+        'name',
+        'my',
+        'say',
+        'call',
+        'what',
+        'is'
+    ]
+
+    change_vocabulary = [
+        'name',
+        'to',
+        'say',
+        'call',
+        'change',
+        'me',
+        'my'
+    ]
+
+
+    f_query = format([query], keep_stop=True, stem=True)
+
+    binary_recall = [False for _ in range(len(recall_vocabulary))]
+    binary_change = [False for _ in range(len(change_vocabulary))]
+
+    for i, word in enumerate(format(recall_vocabulary, keep_stop=True, stem=True)):
+        if word[0] in f_query and not binary_recall[i]:
+            binary_recall[i] = True
+
+    for i, word in enumerate(format(change_vocabulary, keep_stop=True, stem=True)):
+        if word[0] in f_query and not binary_change[i]:
+            binary_change[i] = True
+
+    result = ""
+    if binary_recall.count(True) > binary_change.count(True):
+        if binary_recall.count(True) >= 2:
+            return "recall"
+    elif binary_change.count(True) > binary_recall.count(True):
+        if binary_change.count(True) >= 2:
+            result = format([query], detect_name=True)
+            if not len(result)==1:
+                result = [x for x in result if x not in change_vocabulary]
+    
+    # print('name_intent:')
+    # if isinstance(result, list) and len(result)==1:
+    #     print('here')
+    #     print(result[0])
+    # else:
+    #     print("there")
+    #     print(result)
+    # print(result[0] if isinstance(result, list) and len(result)==1 else result)
+    return result[0].capitalize() if isinstance(result, list) and len(result)==1 else " ".join([x.capitalize() for x in result])
+
+
 
 countVect = CountVectorizer(stop_words=stopwords.words('english')) 
 tfidf_transformer = TfidfTransformer(use_idf=True, sublinear_tf=True)
 classifier = init_classifier(SEED=78054, print_evaluation=True)
 master = load_datasets()
 
-test_qna()
 
 
 start()
-
+# testString = "Call me george"
+# print(format([testString]))
+# print(name_intent(testString))
 
 
 
