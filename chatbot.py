@@ -24,10 +24,10 @@ from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 ########################
 
 USERNAME = None
-DEBUG = True
-PERSONALITY = 'caring'
-QNA_THRESHOLD = 0.55
-SMLTK_THRESHOLD = 0.73 # change to 0.24 if classifier was trained with ds instead of dl
+DEBUG = True # DEBUG mode prints more things relating to the performance of the system; e.g. thresholds are not taken into account when giving a response
+PERSONALITY = 'professional'
+QNA_THRESHOLD = 0.58
+SMLTK_THRESHOLD = 0.64 # change to 0.24 if classifier was trained with ds instead of dl
 RECALL_THRESHOLD = 0.34
 CHANGE_THRESHOLD = 0.25
 
@@ -39,6 +39,9 @@ def start():
     """Main loop between bot and user. Starts by asking for the user's name and exits by pressing 'q'.
     """
     prompt = lambda x: input(f'{x}> ')
+
+    if DEBUG:
+        print("\033[1;31;40m ~~~ DEBUG MODE IS ENABLED ~~~ \033[0m")
 
     global USERNAME
     USERNAME = prompt('What should I call you?\n').capitalize()
@@ -64,12 +67,10 @@ def start():
             run_test_queries(typos=True)
             continue
 
-        # ~~~ Intent Matching ~~~ #
-
         name = name_intent(userInput)
         if name:
             continue
-        intent = qna_smltk_intent(userInput)
+        intent = qna_smltk_intent(userInput, silent=False)
         qna_smltk_answer(userInput, intent, verbose=True, tfidf=True)
 
     print("Bye.")
@@ -106,12 +107,13 @@ def qna_smltk_answer(query, intent, verbose=False, tfidf=True):
         verbose (bool, optional): Prints top 3 results. Defaults to False.
         tfidf (bool, optional): Use tf-idf matrices. Defaults to True.
     """
-    original = query
+    f_query = format(query, sw=master[intent]['sw'], stem=master[intent]['stem'])
+
     if not tfidf:
-        query = bow(format(query), master[intent]['vocabulary']) 
+        query = bow(f_query, master[intent]['vocabulary']) 
         similarity_index = [cos_sim(query, doc.tolist()) for doc in master[intent]['bag']]
     else:
-        query = apply_tfidf([query], master[intent]['vocabulary']).toarray()
+        query = apply_tfidf(f_query, master[intent]['vocabulary']).toarray()
         similarity_index = [cos_sim(query.tolist(), doc.tolist()) for doc in master[intent]['tfidf'].toarray()]
     
     top_results = sorted(similarity_index, reverse=True)[:3]
@@ -131,8 +133,7 @@ def qna_smltk_answer(query, intent, verbose=False, tfidf=True):
             return
     else:
         if top_results:
-            print("-formatted query => [" + ", ".join(format(original)) + "]")
-            print("-matching top answer => [" + ", ".join(master[intent]['parsed'][list(top_results.keys())[0]]) + "]")
+            print("-formatted query => [" + ", ".join(f_query) + "]")
         else:
             default_answer(intent)
 
@@ -142,7 +143,8 @@ def qna_smltk_answer(query, intent, verbose=False, tfidf=True):
                 item = item[0]
             except:
                 NotImplemented
-            print('[' + str(round(item, 3) * 100) + '] ==> ' + master[intent]['answers'][key])
+            print('[' + str(round(item, 3) * 100) + '] ==> ' + master[intent]['answers'][key] + \
+                    " :: \"" + master[intent]['unparsed'][key] + "\" :: [" + ", ".join(master[intent]['parsed'][key]) + "]")
     else: # choose a random answer out of the top results
         maximum = max(top_results.values())
         same_similarity = {x:top_results[x] for x in top_results if top_results[x] == maximum}
@@ -165,12 +167,12 @@ def default_answer(intent=""):
 ###############
 
 
-def format(data, keep_stop=False, stem=False):
+def format(data, sw=False, stem=False):
     """Remove punctuation & stopwords, tokenize, flatten uppercase, lemmatize given documents
 
     Args:
         data ([str]): List of strings to be formatted.
-        keep_stop (bool, optional): Keeps stop words if true. Defaults to False.
+        sw (bool, optional): Keeps stop words if true. Defaults to False.
         stem (bool, optional): Stems rather than lemmatizing. Defaults to False.
 
     Returns:
@@ -191,11 +193,11 @@ def format(data, keep_stop=False, stem=False):
         t = tokenizer.tokenize(doc) # tokenize, remove punctuation
 
         if stem:
-            a.append([stemmer.stem(x) for x in t if x not in stopwords.words('english') or keep_stop])
+            a.append([stemmer.stem(x) for x in t if x not in stopwords.words('english') or sw])
         else:
             # lemmatize, remove stopwords and flatten uppercase
             # if stop words are kept, keep pronouns as well instead of replacing them with -PRON- (spaCy)
-            a.append([x.lemma_.lower() if x.lemma_ != '-PRON-' else x.lower_ for x in nlp(" ".join(t)) if not x.is_stop or keep_stop])
+            a.append([word.lemma_.lower() if word.lemma_ != '-PRON-' else word.lower_ for word in nlp(" ".join(t)) if not word.is_stop or sw])
     return a[0] if len(data) == 1 else a
     
 def vocab(data):
@@ -238,26 +240,25 @@ def bow(data, vocabulary):
                 index = vocabulary.index(term)
             except ValueError:
                 if DEBUG:
-                    print("\033[1;31;40mValueError: \'" + term + "\'\033[0m not in vocabulary. Term will be ignored.")
+                    print("\033[1;31;40mValueError:\n \'" + term + "\'\033[0m not in vocabulary. Term will be ignored.")
                 continue
             bow[i][index] += 1
     return bow
 
 
-def apply_tfidf(unparsed_data, vocabulary):
-    """Applies term-frequency, inverse-document-frequency on provided unparsed dataset using a default CountVectorizer and TfidfTransformer.
+def apply_tfidf(formatted_data, vocabulary):
+    """Applies term-frequency, inverse-document-frequency on provided formatted dataset using 
+    custom functions to create a Bag-of-Words model that is then passed through a default TfidfTransformer.
 
     Args:
-        unparsed_data ([str]): List of data that haven't been formatted (go to definition of format(...) for more info).
-        vocabulary ([str]): Vocabulary of provided unparsed_data.
+        formatted_data ([str]): List of formatted strings that will be matched against provided vocabulary
+        vocabulary ([str]): smltk/qna vocabulary. 
 
     Returns:
-        ndarray array: Matrix of tfidf values from unparsed_data.
+        ndarray array: Matrix of tfidf values from formatted_data.
     """
-    countVect = CountVectorizer(vocabulary=vocabulary)
-    tfidf_transformer = TfidfTransformer(sublinear_tf=True)
-    counts = countVect.fit_transform(unparsed_data)
-    return tfidf_transformer.fit_transform(counts)
+    counts = bow(formatted_data, vocabulary)
+    return TfidfTransformer(sublinear_tf=True).fit_transform(counts)
 
 
 
@@ -303,7 +304,7 @@ def load_datasets():
         qna_parsed = load(f'{qna_path}.parsed.joblib')
     except:
         print(f"Parsing {qna_category}_{extra} dataset...")
-        qna_parsed = format(qna_unparsed, stem=qna_stem, keep_stop=qna_sw)
+        qna_parsed = format(qna_unparsed, stem=qna_stem, sw=qna_sw)
         dump(qna_parsed, f'{qna_path}.parsed.joblib')
 
     try:
@@ -324,7 +325,7 @@ def load_datasets():
         qna_tfidf = load(f'{qna_path}.tfidf.joblib')
     except:
         print("Creating tfidf matrix...")
-        qna_tfidf = apply_tfidf(qna_unparsed, qna_vocabulary)
+        qna_tfidf = apply_tfidf(qna_parsed, qna_vocabulary)
         dump(qna_tfidf, f'{qna_path}.tfidf.joblib')
 
 
@@ -332,7 +333,7 @@ def load_datasets():
 
     personality = PERSONALITY # choose from ['witty', 'caring', 'enthusiastic', 'friendly', 'professional']
     variation = "dl" # choose from ['ds', 'dl'] referring to what is considered a document (ds -> section, dl -> line/question), go to definition of read_small_talk_dataset(...) for more info
-    extra = "sw" # same as above
+    extra = "stem_sw" # same as above
     questions, answers = read_small_talk_dataset(personality, variation)
     smltk_path = f'./objects/small_talk/{personality}_{variation}_{extra}'
 
@@ -348,7 +349,7 @@ def load_datasets():
         smltk_parsed = load(f'{smltk_path}.parsed.joblib')
     except:
         print(f"Parsing {personality}_{variation}_{extra} small talk dataset...")
-        smltk_parsed = format(questions, stem=smltk_stem, keep_stop=smltk_sw)
+        smltk_parsed = format(questions, stem=smltk_stem, sw=smltk_sw)
         dump(smltk_parsed, f'{smltk_path}.parsed.joblib')
 
     try:
@@ -369,20 +370,10 @@ def load_datasets():
         smltk_tfidf = load(f'{smltk_path}.tfidf.joblib')
     except:
         print("Creating tfidf matrix...")
-        smltk_tfidf = apply_tfidf(questions, smltk_vocabulary)
+        smltk_tfidf = apply_tfidf(smltk_parsed, smltk_vocabulary)
         dump(smltk_tfidf, f'{smltk_path}.tfidf.joblib')
 
     return {
-        "qna":{
-            "unparsed": qna_unparsed, #same as below
-            "parsed": qna_parsed,
-            "vocabulary": qna_vocabulary,
-            "bag": qna_bag,
-            "tfidf": qna_tfidf,
-            "answers": qna_dataset['answer'] if qna_category != 'all' else all_categories_answers,
-            "sw": qna_sw,
-            "stem": qna_stem
-        },
         "smltk":{
             "unparsed": questions, # list of original questions as seen in csv file
             "parsed": smltk_parsed, # list of formatted questions (go to definition of function format(...) for more info)
@@ -393,6 +384,16 @@ def load_datasets():
             "sw": smltk_sw, # boolean value; does parsed data contain stop words?
             "stem": smltk_stem # boolean value; was parsed data stemmed?
         },
+        "qna":{
+            "unparsed": qna_unparsed, #same as above
+            "parsed": qna_parsed,
+            "vocabulary": qna_vocabulary,
+            "bag": qna_bag,
+            "tfidf": qna_tfidf,
+            "answers": qna_dataset['answer'] if qna_category != 'all' else all_categories_answers,
+            "sw": qna_sw,
+            "stem": qna_stem
+        }
     }
 
 
@@ -482,7 +483,7 @@ def init_classifier(SEED=rand.randint(1,1000000), print_evaluation=False):
     # remember:
     # x = data
     # y = labels
-    x_train, x_test, y_train, y_test = train_test_split(combined_dataset, labels, stratify=labels, test_size=0.1, random_state=SEED)
+    x_train, x_test, y_train, y_test = train_test_split(combined_dataset, labels, stratify=labels, test_size=0.01, random_state=SEED)
 
     x_train_counts = countVect.fit_transform(x_train)
     x_train_tf = tfidf_transformer.fit_transform(x_train_counts)
@@ -502,12 +503,12 @@ def init_classifier(SEED=rand.randint(1,1000000), print_evaluation=False):
 
     return classifier
 
-def qna_smltk_intent(data, silent=False):
+def qna_smltk_intent(data, silent=True):
     """Matches provided data to either small talk (smltk) or question & answer (qna). Uses trained classifier.
 
     Args:
         data (str): User query to be matched.
-        silent (bool, optional): Show chosen intent on screen. Defaults to False.
+        silent (bool, optional): Show chosen intent on screen. Defaults to True.
 
     Returns:
         str: Predicted intents:
@@ -524,11 +525,12 @@ def qna_smltk_intent(data, silent=False):
     return intent
 
 
-def name_intent(query):
+def name_intent(query, verbose=False):
     """Checks if string 'query' matches the naming intent (recall/change). Gives appropriate answer to the user if it does.
 
     Args:
         query (str): User query.
+        verbose (bool): Show probability that 'query' matches recall/change intents. Defaults to False.
 
     Returns:
         bool: 
@@ -556,20 +558,20 @@ def name_intent(query):
     ]
 
 
-    f_query = format(query, keep_stop=True, stem=True)
+    f_query = format(query, sw=True, stem=True)
 
     binary_recall = [False for _ in range(len(recall_vocabulary))]
     binary_change = [False for _ in range(len(change_vocabulary))]
 
-    for i, word in enumerate(format(recall_vocabulary, keep_stop=True, stem=True)):
+    for i, word in enumerate(format(recall_vocabulary, sw=True, stem=True)):
         if word[0] in f_query and not binary_recall[i]:
             binary_recall[i] = True
 
-    for i, word in enumerate(format(change_vocabulary, keep_stop=True, stem=True)):
+    for i, word in enumerate(format(change_vocabulary, sw=True, stem=True)):
         if word[0] in f_query and not binary_change[i]:
             binary_change[i] = True
 
-    if DEBUG:
+    if verbose:
         print('recall => [' + str(binary_recall.count(True)/len(binary_recall)) + ']')
         print('change => [' + str(binary_change.count(True)/len(binary_change)) + ']')
 
@@ -618,10 +620,10 @@ def run_test_queries(typos=False):
         print("\n~~~~~ " + line[:-1] + " ~~~~~\n")
         query = line[line.find(':')+2:-1]
 
-        name = name_intent(query)
+        name = name_intent(query, verbose=True)
         if name:
             continue
-        intent = qna_smltk_intent(query)
+        intent = qna_smltk_intent(query, silent=False)
         qna_smltk_answer(query, intent, verbose=True, tfidf=True)
 
     f.close()
