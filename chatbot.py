@@ -25,7 +25,11 @@ from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 
 USERNAME = None
 DEBUG = True
-PERSONALITY = 'witty'
+PERSONALITY = 'caring'
+QNA_THRESHOLD = 0.55
+SMLTK_THRESHOLD = 0.73 # change to 0.24 if classifier was trained with ds instead of dl
+RECALL_THRESHOLD = 0.34
+CHANGE_THRESHOLD = 0.25
 
 #################
 ### MAIN LOOP ###
@@ -36,6 +40,7 @@ def start():
     """
     prompt = lambda x: input(f'{x}> ')
 
+    global USERNAME
     USERNAME = prompt('What should I call you?\n').capitalize()
 
     userInput = ''
@@ -52,28 +57,20 @@ def start():
             break
         # Run provided test queries
         elif userInput == 'run test queries':
-            run_test_queries(username=USERNAME)
+            run_test_queries()
             continue
         # Run altered test queries containing typos
         elif userInput == 'run test queries with typos':
-            run_test_queries(username=USERNAME, typos=True)
+            run_test_queries(typos=True)
             continue
 
         # ~~~ Intent Matching ~~~ #
 
         name = name_intent(userInput)
-
         if name:
-            if name == "recall":
-                print("You said I should call you " + USERNAME + ". Anything else?")
-                continue
-            else:
-                print("Noted " + name + ".")
-                USERNAME = name
-                continue
-
-        intent = get_intent(userInput)
-        answer(userInput, intent, verbose=True, tfidf=True)
+            continue
+        intent = qna_smltk_intent(userInput)
+        qna_smltk_answer(userInput, intent, verbose=True, tfidf=True)
 
     print("Bye.")
 
@@ -98,7 +95,7 @@ def cos_sim(q, d):
         return y
     return x/y
 
-def answer(query, intent, verbose=False, tfidf=True):
+def qna_smltk_answer(query, intent, verbose=False, tfidf=True):
     """Computes similarity index between provided user query and loaded datasets. Answers the user based on their query.
 
     Args:
@@ -109,7 +106,7 @@ def answer(query, intent, verbose=False, tfidf=True):
         verbose (bool, optional): Prints top 3 results. Defaults to False.
         tfidf (bool, optional): Use tf-idf matrices. Defaults to True.
     """
-
+    original = query
     if not tfidf:
         query = bow(format(query), master[intent]['vocabulary']) 
         similarity_index = [cos_sim(query, doc.tolist()) for doc in master[intent]['bag']]
@@ -119,17 +116,49 @@ def answer(query, intent, verbose=False, tfidf=True):
     
     top_results = sorted(similarity_index, reverse=True)[:3]
     top_results = {i:x for i, x in enumerate(similarity_index) if x in top_results and x != 0}
-    
+    top_results = dict(sorted(top_results.items(), key=lambda item: item[1], reverse=True))
+
+    if not DEBUG:
+        if not top_results:
+            default_answer()
+            return
+        # Give default answers when most similar result doesn't exceed the required threshold
+        if intent == 'smltk' and max(top_results.values()) < SMLTK_THRESHOLD:
+            default_answer("smltk")
+            return
+        if intent == 'qna' and max(top_results.values()) < QNA_THRESHOLD:
+            default_answer("qna")
+            return
+    else:
+        if top_results:
+            print("-formatted query => [" + ", ".join(format(original)) + "]")
+            print("-matching top answer => [" + ", ".join(master[intent]['parsed'][list(top_results.keys())[0]]) + "]")
+        else:
+            default_answer(intent)
+
     if verbose:
-        for i, x in zip(top_results.keys(), top_results.values()):
+        for key, item in top_results.items():
             try:
-                x = x[0]
+                item = item[0]
             except:
                 NotImplemented
-            print('[' + str(round(x, 3) * 100) + '] ==> ' + master[intent]['answers'][i])
+            print('[' + str(round(item, 3) * 100) + '] ==> ' + master[intent]['answers'][key])
     else: # choose a random answer out of the top results
-        # indeces = [i for i, x in enumerate(similarity_index) if x == max(top_results)]
-        print(master[intent]['answers'][rand.choice(top_results.keys())])
+        maximum = max(top_results.values())
+        same_similarity = {x:top_results[x] for x in top_results if top_results[x] == maximum}
+        print(master[intent]['answers'][rand.choice(list(same_similarity.keys()))])
+
+
+def default_answer(intent=""):
+    if intent == "qna":
+        print("I don't have any such information in my database.")
+    elif intent == "smltk":
+        print("I am not sure what you mean.")
+    elif intent == "change":
+        print("Sorry, didn't get that. Can you repeat what you would me to call you?")
+    else:
+        print("Sorry, I can't answer that right now.")
+
 
 ###############
 ### Helpers ###
@@ -164,7 +193,9 @@ def format(data, keep_stop=False, stem=False):
         if stem:
             a.append([stemmer.stem(x) for x in t if x not in stopwords.words('english') or keep_stop])
         else:
-            a.append([x.lemma_.lower() for x in nlp(" ".join(t)) if not x.is_stop or keep_stop])# lemmatize, remove stopwords and flatten uppercase
+            # lemmatize, remove stopwords and flatten uppercase
+            # if stop words are kept, keep pronouns as well instead of replacing them with -PRON- (spaCy)
+            a.append([x.lemma_.lower() if x.lemma_ != '-PRON-' else x.lower_ for x in nlp(" ".join(t)) if not x.is_stop or keep_stop])
     return a[0] if len(data) == 1 else a
     
 def vocab(data):
@@ -223,7 +254,7 @@ def apply_tfidf(unparsed_data, vocabulary):
     Returns:
         ndarray array: Matrix of tfidf values from unparsed_data.
     """
-    countVect = CountVectorizer(vocabulary=vocabulary)#, analyzer=format)
+    countVect = CountVectorizer(vocabulary=vocabulary)
     tfidf_transformer = TfidfTransformer(sublinear_tf=True)
     counts = countVect.fit_transform(unparsed_data)
     return tfidf_transformer.fit_transform(counts)
@@ -243,6 +274,7 @@ def load_datasets():
     ### combined => concatenation of 2 or more meaningful categories
     ###             number of documents stays the same but length of each document increases
     ###             QD => question + document
+    ###             Have to manual change which columns you want to use in combined_categories list
 
     qna_dataset = pd.read_csv('./data/qna/dataset.csv')
     qna_category = "question"
@@ -250,7 +282,7 @@ def load_datasets():
     qna_path = f'./objects/qna/{qna_category}_{extra}'
     all_categories = qna_dataset['question'].tolist() + qna_dataset['answer'].tolist() + qna_dataset['document'].tolist()
     all_categories_answers = qna_dataset['answer'].tolist() + qna_dataset['answer'].tolist() + qna_dataset['answer'].tolist()
-    combined_categories = [x+y for x,y in zip(qna_dataset['question'], qna_dataset['answer'])]
+    combined_categories = [x+y for x,y in zip(qna_dataset['question'], qna_dataset['document'])]
 
     if qna_category == 'all':
         qna_unparsed = all_categories
@@ -270,7 +302,7 @@ def load_datasets():
     try:
         qna_parsed = load(f'{qna_path}.parsed.joblib')
     except:
-        print(f"Parsing qna[{qna_category}] dataset...")
+        print(f"Parsing {qna_category}_{extra} dataset...")
         qna_parsed = format(qna_unparsed, stem=qna_stem, keep_stop=qna_sw)
         dump(qna_parsed, f'{qna_path}.parsed.joblib')
 
@@ -299,8 +331,8 @@ def load_datasets():
     ###### Small Talk Dataset ######
 
     personality = PERSONALITY # choose from ['witty', 'caring', 'enthusiastic', 'friendly', 'professional']
-    variation = "ds" # choose from ['ds', 'dl'] referring to what is considered a document (ds -> section, dl -> line/question)
-    extra = "" # same as above
+    variation = "dl" # choose from ['ds', 'dl'] referring to what is considered a document (ds -> section, dl -> line/question), go to definition of read_small_talk_dataset(...) for more info
+    extra = "sw" # same as above
     questions, answers = read_small_talk_dataset(personality, variation)
     smltk_path = f'./objects/small_talk/{personality}_{variation}_{extra}'
 
@@ -426,21 +458,19 @@ def read_small_talk_dataset(personality, variation="ds"):
     return questions, answers
 
 
-def init_classifier(SEED=rand.randint(1,100000), print_evaluation=False):
+def init_classifier(SEED=rand.randint(1,1000000), print_evaluation=False):
     """Initialise a classifier that classifies query strings as either smltk or qna.
 
     Args:
-        SEED (Integer, optional): Provide specific seed for classifier. Defaults to rand.randint(1,100000).
+        SEED (int, optional): Provide specific seed for classifier. Defaults to rand.randint(1,1000000).
         print_evaluation (bool, optional): Choose whether to print the evaluation of the classifier or not.
         Evaluation includes confusion matrix, accuracy score and f1 score. Defaults to False.
 
     Returns:
         Object: trained classifier
     """
-    rand.seed(SEED)
-
     qna_csv = pd.read_csv('./data/qna/dataset.csv')
-    qna_dataset = [item for x in qna_csv if x != 'questionID' for item in qna_csv[x]] 
+    qna_dataset = [item for column in qna_csv if column != 'questionID' for item in qna_csv[column]] 
 
     smltk_dataset, _ = read_small_talk_dataset(PERSONALITY, 'dl')
 
@@ -452,27 +482,27 @@ def init_classifier(SEED=rand.randint(1,100000), print_evaluation=False):
     # remember:
     # x = data
     # y = labels
-    x_train, x_test, y_train, y_test = train_test_split(combined_dataset, labels, stratify=labels, test_size=0.25, random_state=SEED)
+    x_train, x_test, y_train, y_test = train_test_split(combined_dataset, labels, stratify=labels, test_size=0.1, random_state=SEED)
 
     x_train_counts = countVect.fit_transform(x_train)
     x_train_tf = tfidf_transformer.fit_transform(x_train_counts)
 
     classifier = LogisticRegression(random_state=SEED).fit(x_train_tf, y_train)
 
-    x_test_counts = countVect.transform(x_test)
-    x_test_tf = tfidf_transformer.transform(x_test_counts)
-
-    predicted = classifier.predict(x_test_tf)
-
     if print_evaluation:
+        x_test_counts = countVect.transform(x_test)
+        x_test_tf = tfidf_transformer.transform(x_test_counts)
+
+        predicted = classifier.predict(x_test_tf)
+
         print(confusion_matrix(y_test, predicted))
         print(accuracy_score(y_test, predicted))
         print(f1_score(y_test, predicted, pos_label='smltk'))
-        print("SEED: {}".format(SEED))
+        print(f'SEED: {SEED}')
 
     return classifier
 
-def get_intent(data, silent=False):
+def qna_smltk_intent(data, silent=False):
     """Matches provided data to either small talk (smltk) or question & answer (qna). Uses trained classifier.
 
     Args:
@@ -493,17 +523,17 @@ def get_intent(data, silent=False):
         print(intent)
     return intent
 
+
 def name_intent(query):
-    """Checks if query string given matches the naming intent (recall/change).
+    """Checks if string 'query' matches the naming intent (recall/change). Gives appropriate answer to the user if it does.
 
     Args:
         query (str): User query.
 
     Returns:
-        str: 3 possible return values:
-        - "" -> provided user query doesn't match naming intent
-        - "recall" -> provided user query matches recall name intent, bot should recall provided username
-        - "..." -> provided user query matches change name intent. Return str is new detected username
+        bool: 
+        - True if intent was name (recall/change).
+        - False if intent was not name (recall/change).
     """
     recall_vocabulary = [
         'name',
@@ -521,11 +551,12 @@ def name_intent(query):
         'call',
         'change',
         'me',
-        'my'
+        'my',
+        'it'
     ]
 
 
-    f_query = format([query], keep_stop=True, stem=True)
+    f_query = format(query, keep_stop=True, stem=True)
 
     binary_recall = [False for _ in range(len(recall_vocabulary))]
     binary_change = [False for _ in range(len(change_vocabulary))]
@@ -538,30 +569,42 @@ def name_intent(query):
         if word[0] in f_query and not binary_change[i]:
             binary_change[i] = True
 
+    if DEBUG:
+        print('recall => [' + str(binary_recall.count(True)/len(binary_recall)) + ']')
+        print('change => [' + str(binary_change.count(True)/len(binary_change)) + ']')
+
     result = ""
-    if binary_recall.count(True) > binary_change.count(True):
-        if binary_recall.count(True) >= 2:
-            return "recall"
-    elif binary_change.count(True) > binary_recall.count(True):
-        if binary_change.count(True) >= 2:
-            result = format([query])
-            # result = format([query], detect_name=True)
-            if not len(result)==1:
-                result = [x for x in result if x not in change_vocabulary]
-    
-    return result[0].capitalize() if isinstance(result, list) and len(result)==1 else " ".join([x.capitalize() for x in result])
+
+    if binary_recall.count(True) > binary_change.count(True) and binary_recall.count(True)/len(binary_recall) >= RECALL_THRESHOLD:
+        result = "recall"
+    elif binary_change.count(True) > binary_recall.count(True) and binary_change.count(True)/len(binary_change) >= CHANGE_THRESHOLD:
+        result = [word for word in format(query) if word not in change_vocabulary]
+        if not result: # no new name was found even though change name intent was detected
+            result = "change_default"
+
+    global USERNAME
+
+    if result:
+        if result == "recall":
+            print("You said I should call you " + USERNAME + ". Anything else?")
+        elif result == "change_default":
+            default_answer("change")
+        else:
+            name = result[0].capitalize() if isinstance(result, list) and len(result)==1 else " ".join([x.capitalize() for x in result])
+            print("I'll call you " + name + " from now on.")
+            USERNAME = name
+        return True
+
+    return False
 
 
-def run_test_queries(username, typos=False):
+def run_test_queries(typos=False):
     """Sequentially runs the provided test queries and prints the results on screen.
     Run by prompting the bot with the phrases:
     - "run test queries"
     - "run test queries with typos"
-    
-    **Note: Name of the user does not change internally, even if a name change intent is detected.
 
     Args:
-        name (str): Name of the user.
         typos (bool, optional): Test with typos. Defaults to False.
     """
     if typos:
@@ -569,52 +612,25 @@ def run_test_queries(username, typos=False):
     else:
         f = open('./data/qna/test_queries.txt', 'r')
 
+    global USERNAME
 
     for line in f:
         print("\n~~~~~ " + line[:-1] + " ~~~~~\n")
         query = line[line.find(':')+2:-1]
 
         name = name_intent(query)
-
         if name:
-            if name == "recall":
-                print("You said I should call you " + username + ". Anything else?")
-                continue
-            else: # name is not changed when running test queries
-                print("Noted " + name + ".")
-                continue
-
-        intent = get_intent(query)
-        answer(query, intent, verbose=True, tfidf=True)
+            continue
+        intent = qna_smltk_intent(query)
+        qna_smltk_answer(query, intent, verbose=True, tfidf=True)
 
     f.close()
 
-# def test_qna():
-#     qna_dataset = pd.read_csv('./data/qna/dataset.csv')
-#     questions = qna_dataset['question']
-#     answers = qna_dataset['answer']
-
-#     misclassified = {}
-#     correct = {}
-#     for i, q in zip(enumerate(questions), range(100)):
-#         intent = get_intent([q], silent=True)
-#         if intent == 'smltk':
-#             misclassified['Q' + str(i+1)] = q
-#             continue
-        
-#         results = answer(q, intent, silent=True)
-#         correct[q] = ['Q'+str(i+1) for i in results if results[i] == 100]
-
-#     print(misclassified)
-
-
 countVect = CountVectorizer(stop_words=stopwords.words('english')) 
 tfidf_transformer = TfidfTransformer(use_idf=True, sublinear_tf=True)
-classifier = init_classifier(SEED=78054)
+classifier = init_classifier(SEED=78054, print_evaluation=True)
 master = load_datasets()
 
-
 start()
-
 
 
