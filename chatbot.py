@@ -18,20 +18,20 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 from nltk.corpus import stopwords
 from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
+import textdistance
 
 ########################
 ### GLOBAL VARIABLES ###
 ########################
 
-DEBUG = True # DEBUG mode prints more things relating to the performance of the system; e.g. thresholds are not taken into account when giving a response
+DEBUG = False # DEBUG mode prints more things relating to the performance of the system; e.g. thresholds are not taken into account when giving a response
 USERNAME = None
 PERSONALITY = None
 QNA_THRESHOLD = 0.58
 SMLTK_THRESHOLD = 0.76 # change to 0.24 if classifier was trained with ds instead of dl
 RECALL_THRESHOLD = 0.34
 CHANGE_THRESHOLD = 0.25
-
-prompt = lambda x: input(f'{x}> ')
+RUNNING = True
 
 #################
 ### MAIN LOOP ###
@@ -44,13 +44,13 @@ def start():
     if DEBUG:
         print("\033[1;31;40m ~~~ DEBUG MODE IS ENABLED ~~~ \033[0m")
 
-    global USERNAME
+    global USERNAME, RUNNING
     USERNAME = prompt('What should I call you?\n').capitalize()
 
     userInput = ''
     print('\nEnter \'q\' to quit any time.')
 
-    while True:
+    while RUNNING:
         userInput = prompt('\nListening...')
 
         # Special cases
@@ -58,6 +58,7 @@ def start():
             continue
         # Quit
         elif userInput == 'q':
+            print("Bye.")
             break
         # Run provided test queries
         elif userInput == 'run test queries':
@@ -68,13 +69,11 @@ def start():
             run_test_queries(typos=True)
             continue
 
-        name = name_intent(userInput)
+        name = name_intent(userInput, verbose=False)
         if name:
             continue
         intent = qna_smltk_intent(userInput, silent=True)
         qna_smltk_answer(userInput, intent, verbose=False, tfidf=True)
-
-    print("Talk to you later.")
 
 
 #########################
@@ -92,7 +91,19 @@ def qna_smltk_answer(query, intent, verbose=False, tfidf=True):
         verbose (bool, optional): Prints top 3 results. Defaults to False.
         tfidf (bool, optional): Use bag of words with tfidf weighting. Defaults to True.
     """
+    terminating_responses = [
+        'Goodbye!',
+        'Goodbye.',
+        'Bye.',
+        'Later.',
+        'See you later!'
+    ]
+
     f_query = format(query, sw=master[intent]['sw'], stem=master[intent]['stem'])
+
+    if not f_query:
+        default_answer(intent)
+        return
 
     if tfidf:
         query = apply_tfidf(f_query, master[intent]['vocabulary']).toarray()
@@ -133,7 +144,11 @@ def qna_smltk_answer(query, intent, verbose=False, tfidf=True):
     else: # choose a random answer out of the top results
         maximum = max(top_results.values())
         same_similarity = {x:top_results[x] for x in top_results if top_results[x] == maximum}
-        print(master[intent]['answers'][rand.choice(list(same_similarity.keys()))])
+        answer = master[intent]['answers'][rand.choice(list(same_similarity.keys()))]
+        print(answer)
+        if answer in terminating_responses:
+            global RUNNING
+            RUNNING = False
 
 
 def qna_smltk_intent(data, silent=True):
@@ -187,14 +202,12 @@ def name_intent(query, verbose=False):
     change_vocabulary = [
         'name',
         'to',
-        'say',
         'call',
         'change',
         'me',
         'my',
         'it'
     ]
-
 
     f_query = format(query, sw=True, stem=True)
 
@@ -242,6 +255,7 @@ def name_intent(query, verbose=False):
 ### Helpers ###
 ###############
 
+prompt = lambda x: input(f'{x}> ')
 
 def cos_sim(q, d):
     """Computes the cosine similarity between a query and a document.
@@ -654,7 +668,7 @@ def run_test_queries(typos=False):
         if name:
             continue
         intent = qna_smltk_intent(query, silent=True)
-        qna_smltk_answer(query, intent, verbose=True, tfidf=True)
+        qna_smltk_answer(query, intent, verbose=False, tfidf=True)
 
     f.close()
 
@@ -674,7 +688,6 @@ countVect = CountVectorizer(stop_words=stopwords.words('english'))
 tfidf_transformer = TfidfTransformer(use_idf=True, sublinear_tf=True)
 classifier = init_classifier(SEED=78054, print_evaluation=False)
 master = load_datasets()
-
 
 start()
 
